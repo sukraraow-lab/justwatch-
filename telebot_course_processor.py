@@ -256,23 +256,12 @@ class MediaPipeline:
         return entries
 
     @staticmethod
-    def check_url_expiration(url: str) -> tuple[bool, str]:
-        exp_match = re.search(r"[Ee]xpires=(\d+)|endtime_epoch=(\d+)", url)
-        if exp_match:
-            epoch = int(exp_match.group(1) or exp_match.group(2))
-            now = int(time.time())
-            if now > epoch:
-                diff_hours = (now - epoch) / 3600
-                return True, f"Expired {diff_hours:.1f}h ago"
-        return False, "Valid"
-
-    @staticmethod
     async def download_pdf(url: str, output_path: Path) -> tuple[bool, str]:
         try:
             async with aiohttp.ClientSession(headers=HEADERS) as session:
                 async with session.get(url, timeout=180, ssl=False) as resp:
                     if resp.status == 404:
-                        return False, "404 Not Found from CDN"
+                        return False, "404 Not Found (Expired signature or missing on CDN)"
                     if resp.status != 200:
                         return False, f"HTTP Error {resp.status}"
                     with open(output_path, "wb") as f:
@@ -289,7 +278,7 @@ class MediaPipeline:
 
     @staticmethod
     async def capture_full_video(url: str, output_path: Path, quality: str = "480p") -> tuple[bool, str]:
-        # Step 1: Direct stream copy with TLS bypass (100% full duration, lossless audio)
+        # Direct stream copy with TLS bypass (100% full duration, lossless audio)
         cmd_copy = [
             FFMPEG_BIN, "-y",
             "-tls_verify", "0",
@@ -306,7 +295,7 @@ class MediaPipeline:
         if proc.returncode == 0 and output_path.exists() and output_path.stat().st_size > 1024 * 100:
             return True, "OK (Full Stream Copy)"
 
-        # Step 2: Transcode fallback
+        # Transcode fallback
         preset = MediaPipeline.QUALITY_PRESETS.get(quality, MediaPipeline.QUALITY_PRESETS["480p"])
         cmd_transcode = [
             FFMPEG_BIN, "-y",
@@ -328,7 +317,7 @@ class MediaPipeline:
         if proc2.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
             return True, "OK (Transcoded Video)"
 
-        return False, "Failed to capture HLS stream"
+        return False, "Failed to capture HLS video stream"
 
     @staticmethod
     async def fetch_mp4(url: str, output_path: Path) -> tuple[bool, str]:
@@ -403,20 +392,7 @@ async def execute_batch_task(client: Client, user_id: int, source_chat_id: int, 
                 pass
             continue
 
-        # 2. Expiration Verification
-        is_exp, exp_note = MediaPipeline.check_url_expiration(url)
-        if is_exp:
-            failed_count += 1
-            try:
-                await client.send_message(
-                    chat_id=source_chat_id,
-                    text=f"⚠️ **Skipped:** `{title}`\nReason: **Link Expired** ({exp_note})."
-                )
-            except Exception:
-                pass
-            continue
-
-        # 3. PDF Document Pipeline (Supports up to 2GB)
+        # 2. PDF Document Pipeline (Supports up to 2GB)
         if media_type == "pdf":
             out_path = WORKDIR / f"{title}.pdf"
             try:
@@ -443,14 +419,14 @@ async def execute_batch_task(client: Client, user_id: int, source_chat_id: int, 
                     failed_count += 1
                     await client.send_message(
                         chat_id=source_chat_id,
-                        text=f"❌ **PDF Upload Error to {target_chat}:** `{e}`\n*(Ensure bot is Admin with Post permissions)*"
+                        text=f"❌ **PDF Upload Error to {target_chat}:** `{e}`\n*(Ensure bot is Admin in target channel/group)*"
                     )
                 out_path.unlink(missing_ok=True)
             else:
                 failed_count += 1
                 await client.send_message(chat_id=source_chat_id, text=f"❌ **PDF Download Failed:** `{title}`\nReason: `{msg_reason}`")
 
-        # 4. Full Video Lecture Pipeline (Supports up to 2GB)
+        # 3. Full Video Lecture Pipeline (Supports up to 2GB)
         else:
             out_path = WORKDIR / f"{title}.mp4"
             try:
@@ -502,7 +478,7 @@ async def execute_batch_task(client: Client, user_id: int, source_chat_id: int, 
             f"• 🎬 Full Videos Sent: `{uploaded_videos}`\n"
             f"• 📄 PDF Notes Sent: `{uploaded_pdfs}`\n"
             f"• ⏭️ Skipped (Already Present): `{skipped_duplicates}`\n"
-            f"• ❌ Failed / Expired: `{failed_count}`\n\n"
+            f"• ❌ Failed / 404: `{failed_count}`\n\n"
             f"🎯 **Delivered Directly To:** `{target_chat}`"
         )
     except Exception:
@@ -616,7 +592,7 @@ async def callback_handler(client: Client, call: CallbackQuery):
         status_msg = await call.message.edit_text(
             f"🚀 **Queue active:** {len(entries)} items\n"
             f"⚡ Quality: `{quality}` | 🎯 Destination: `Current Chat`\n"
-            "Checking deduplication memory & starting MTProto worker..."
+            "Starting MTProto direct stream worker..."
         )
         asyncio.create_task(execute_batch_task(client, user_id, source_chat, entries, quality, target, status_msg))
 
@@ -630,7 +606,7 @@ async def callback_handler(client: Client, call: CallbackQuery):
         status_msg = await call.message.edit_text(
             f"🚀 **Queue active:** {len(entries)} items\n"
             f"⚡ Quality: `{quality}` | 🎯 Destination: `{target}`\n"
-            "Checking deduplication memory & starting MTProto worker..."
+            "Starting MTProto direct stream worker..."
         )
         asyncio.create_task(execute_batch_task(client, user_id, source_chat, entries, quality, target, status_msg))
 

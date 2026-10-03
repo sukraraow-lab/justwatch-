@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: telebot-course-processor
+    runtime: docker
+    plan: free
+    region: oregon
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: PORT
+        value: 8080
